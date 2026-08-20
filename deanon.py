@@ -14,7 +14,7 @@ from telethon import TelegramClient, errors
 from telethon.tl.functions.messages import ReportRequest
 from telethon.tl.types import InputReportReasonViolence
 
-VERSION = "8.0"
+VERSION = "8.1"
 REPO_URL = "https://raw.githubusercontent.com/ezzqn/rocket-deanon/main/deanon.py"
 
 def version_to_tuple(v):
@@ -134,10 +134,10 @@ async def find_threat_messages(client, entity, limit=150):
                     break
     if threat_ids:
         print(f"[+] Найдено {len(threat_ids)} сообщений с угрозами.")
-        return threat_ids
+        return threat_ids, messages
     else:
-        print("[!] Угроз не найдено. Будет использовано последнее сообщение.")
-        return [messages[0].id] if messages else [1]
+        print("[!] УГРОЗЫ НЕ ОБНАРУЖЕНЫ.")
+        return [], messages
 
 async def check_account_status(username):
     client = TelegramClient(SESSION_NAME, api_id, api_hash)
@@ -165,10 +165,13 @@ async def send_reports(target_username):
     print(" ПРИЧИНА: УГРОЗЫ (VIOLENCE)")
     print(" АВТОПОИСК УГРОЗ В 150 СООБЩЕНИЯХ")
     print("="*50 + "\n")
+    
     client = TelegramClient(SESSION_NAME, api_id, api_hash)
     await client.start()
+    
     me = await client.get_me()
     print(f"[+] Аккаунт: {me.first_name} (ID: {me.id})")
+    
     try:
         entity = await client.get_entity(f'@{target_username}')
         print(f"[+] Цель найдена: {entity.title if hasattr(entity, 'title') else entity.first_name}")
@@ -176,20 +179,56 @@ async def send_reports(target_username):
         print(f"[-] Ошибка: цель не найдена. {e}")
         await client.disconnect()
         return
-    try:
-        msg_ids = await find_threat_messages(client, entity, limit=150)
-        print(f"[+] Будет использовано {len(msg_ids)} сообщений для привязки.")
-    except Exception as e:
-        print(f"[!] Ошибка сканирования: {e}. Использую последнее сообщение.")
-        try:
-            messages = await client.get_messages(entity, limit=1)
-            msg_ids = [messages[0].id] if messages else [1]
-        except:
-            msg_ids = [1]
+    
+    # --- БЛОК ПОИСКА УГРОЗ ---
+    msg_ids = []
+    messages = []
+    while True:
+        threat_ids, messages = await find_threat_messages(client, entity, limit=150)
+        if threat_ids:
+            msg_ids = threat_ids
+            break
+        else:
+            print("\n" + "="*50)
+            print(" УГРОЗЫ НЕ ОБНАРУЖЕНЫ. ВЫБЕРИТЕ ДЕЙСТВИЕ:")
+            print("="*50)
+            print("  1. 🔄 Повторить поиск (сканировать ещё раз)")
+            print("  2. ⚠️ Отправить без привязки (РИСК БАНА — жалобы могут быть отклонены)")
+            print("  3. ❌ Отменить отправку жалоб")
+            print("="*50)
+            choice = input(">> ").strip()
+            
+            if choice == '1':
+                print("[+] Повторное сканирование...\n")
+                continue
+            elif choice == '2':
+                print("[!] Вы выбрали отправку БЕЗ ПРИВЯЗКИ к конкретным угрозам.")
+                print("[!] Это увеличивает риск того, что жалобы будут отклонены модерацией.")
+                confirm = input("Всё равно продолжить? (y/n): ").strip().lower()
+                if confirm == 'y':
+                    print("[+] Жалобы будут отправлены без привязки к угрозам.")
+                    try:
+                        last_msg = await client.get_messages(entity, limit=1)
+                        msg_ids = [last_msg[0].id] if last_msg else [1]
+                    except:
+                        msg_ids = [1]
+                    break
+                else:
+                    print("[+] Отмена. Возврат к выбору действия.")
+                    continue
+            elif choice == '3':
+                print("[❌] Отправка жалоб ОТМЕНЕНА.")
+                await client.disconnect()
+                return
+            else:
+                print("[!] Неверный выбор. Попробуйте снова.")
+    
+    # --- ОТПРАВКА ЖАЛОБ ---
     print(f"\n[+] Старт: {TOTAL_REPORTS} жалоб (причина: угрозы), интервал {INTERVAL} сек.\n")
     sent = 0
     errors_count = 0
     start_time = time.time()
+    
     for i in range(1, TOTAL_REPORTS + 1):
         try:
             await client.call(
@@ -207,11 +246,14 @@ async def send_reports(target_username):
         except Exception as e:
             errors_count += 1
             print(f"[{i:>2}/{TOTAL_REPORTS}] ❌ Ошибка: {e}")
+        
         if i < TOTAL_REPORTS:
             await asyncio.sleep(INTERVAL)
+    
     elapsed = int(time.time() - start_time)
     minutes = elapsed // 60
     seconds = elapsed % 60
+    
     print("\n" + "="*50)
     print(" ОТЧЁТ ПО СНОСУ")
     print("="*50)
@@ -223,6 +265,7 @@ async def send_reports(target_username):
     print(f" Время:         {minutes} мин {seconds} сек")
     print(f" Статус:        ⏳ ЖАЛОБЫ НА РАССМОТРЕНИИ. ПРОВЕРЬТЕ СТАТУС ЧЕРЕЗ 1-2 ЧАСА.")
     print("="*50 + "\n")
+    
     await client.disconnect()
 
 async def main():
@@ -231,7 +274,7 @@ async def main():
         clear()
         print("""
 ╔═══════════════════════════════════════════╗
-║     [ ROCKET DEANON PRO v8.0 ]           ║
+║     [ ROCKET DEANON PRO v8.1 ]           ║
 ║         АВТОПОИСК УГРОЗ                  ║
 ╠═══════════════════════════════════════════╣
 ║  1. telegram   — инфо по юзеру           ║
@@ -243,25 +286,30 @@ async def main():
 ╚═══════════════════════════════════════════╝
 """)
         choice = input(">> ").strip().lower()
+
         if choice == '1' or choice == 'telegram':
             username = input("Введите username (без @): ")
             phone = get_phone_by_nick(username)
             if phone and phone != 'Не найден':
                 get_max_phone_info(phone)
             input("\nENTER → меню")
+
         elif choice == '2' or choice == 'number':
             phone = input("Введите номер (+79001234567): ")
             get_max_phone_info(phone)
             input("\nENTER → меню")
+
         elif choice == '3' or choice == 'ip':
             ip = input("Введите IP: ")
             get_max_ip_info(ip)
             input("\nENTER → меню")
+
         elif choice == '4' or choice == 'snos':
             target = input("Введите username канала или пользователя (без @): ")
             TARGET_USERNAME = target
             await send_reports(target)
             input("\nENTER → меню")
+
         elif choice == '5' or choice == 'status':
             if not TARGET_USERNAME:
                 target = input("Введите username (без @): ")
@@ -270,12 +318,15 @@ async def main():
             status, _ = await check_account_status(TARGET_USERNAME)
             print(f"\n📌 СТАТУС АККАУНТА: {status}")
             input("\nENTER → меню")
+
         elif choice == '6' or choice == 'exit':
             print("Выход.")
             break
+
         else:
             input("Неверно. ENTER → меню")
 
+# ===== ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ (НЕ ИЗМЕНЕНЫ) =====
 def get_phone_by_nick(nick):
     print(f"\n[+] Поиск номера для @{nick}...")
     try:
