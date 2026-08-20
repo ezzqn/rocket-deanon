@@ -14,10 +14,9 @@ from telethon.tl.functions.messages import ReportRequest
 from telethon.tl.types import InputReportReasonViolence
 
 # ===== ВЕРСИЯ =====
-VERSION = "9.6"
+VERSION = "9.8"
 REPO_URL = "https://raw.githubusercontent.com/ezzqn/rocket-deanon/main/deanon.py"
 
-# ===== ФУНКЦИИ =====
 def version_to_tuple(v):
     return tuple(map(int, v.split('.')))
 
@@ -212,7 +211,153 @@ async def gos_menu():
             print("[!] Неверный выбор.")
             time.sleep(1)
 
-# ===== ОСНОВНОЕ МЕНЮ (ВЫРОВНЕННОЕ) =====
+# ===== ПОИСК УГРОЗ (ЛИМИТ 10 000) =====
+THREAT_KEYWORDS = [
+    'убью', 'убить', 'смерть', 'зарежу', 'зарезать', 'взорву', 'взорвать',
+    'подожгу', 'поджечь', 'сломаю', 'сломать', 'изнасилую', 'изнасиловать',
+    'отрежу', 'отрезать', 'вырежу', 'вырезать', 'закопаю', 'закопать',
+    'киллер', 'расстрел', 'расстреляю', 'петля', 'пуля', 'нож', 'пистолет',
+    'kill', 'death', 'die', 'murder', 'slaughter', 'blood', 'bloody',
+    'shoot', 'shot', 'gun', 'weapon', 'bomb', 'explosive', 'terror',
+    'attack', 'assault', 'violence', 'violent', 'threat', 'threaten',
+]
+
+async def find_threat_messages(client, entity, limit=10000):
+    """Сканирует последние 10 000 сообщений и ищет угрозы"""
+    print(f"[+] Сканирование последних 10 000 сообщений...")
+    messages = await client.get_messages(entity, limit=limit)
+    threat_ids = []
+    for msg in messages:
+        if msg.text:
+            msg_lower = msg.text.lower()
+            for word in THREAT_KEYWORDS:
+                if word in msg_lower:
+                    threat_ids.append(msg.id)
+                    print(f"  ⚠️ Угроза в сообщении {msg.id}")
+                    break
+    if threat_ids:
+        print(f"[+] Найдено {len(threat_ids)} сообщений с угрозами.")
+        return threat_ids, messages
+    else:
+        print("[!] УГРОЗЫ НЕ ОБНАРУЖЕНЫ.")
+        return [], messages
+
+# ===== СНОС =====
+async def send_reports(target_username):
+    print("\n" + "="*50)
+    print(f" ROCKET SNOSER — {TOTAL_REPORTS} жалоб за {TOTAL_REPORTS * INTERVAL // 60} минут")
+    print(" ПРИЧИНА: УГРОЗЫ (VIOLENCE)")
+    print("="*50 + "\n")
+    
+    client = TelegramClient(SESSION_NAME, api_id, api_hash)
+    await client.start()
+    
+    me = await client.get_me()
+    print(f"[+] Аккаунт: {me.first_name} (ID: {me.id})")
+    
+    try:
+        entity = await client.get_entity(f'@{target_username}')
+        print(f"[+] Цель найдена: {entity.title if hasattr(entity, 'title') else entity.first_name}")
+    except Exception as e:
+        print(f"[-] Ошибка: цель не найдена. {e}")
+        await client.disconnect()
+        return
+    
+    msg_ids = []
+    while True:
+        threat_ids, _ = await find_threat_messages(client, entity, limit=10000)
+        if threat_ids:
+            msg_ids = threat_ids
+            break
+        else:
+            print("\n" + "="*50)
+            print(" УГРОЗЫ НЕ ОБНАРУЖЕНЫ. ВЫБЕРИТЕ ДЕЙСТВИЕ:")
+            print("="*50)
+            print("  1. 🔄 Повторить поиск")
+            print("  2. ⚠️ Отправить без привязки (РИСК БАНА)")
+            print("  3. ❌ Отменить отправку")
+            print("="*50)
+            choice = input(">> ").strip()
+            
+            if choice == '1':
+                continue
+            elif choice == '2':
+                print("[!] Отправка без привязки...")
+                try:
+                    last_msg = await client.get_messages(entity, limit=1)
+                    msg_ids = [last_msg[0].id] if last_msg else [1]
+                except:
+                    msg_ids = [1]
+                break
+            elif choice == '3':
+                print("[❌] Отменено.")
+                await client.disconnect()
+                return
+    
+    print(f"\n[+] Старт: {TOTAL_REPORTS} жалоб (привязано {len(msg_ids)} сообщений)\n")
+    sent = 0
+    errors_count = 0
+    start_time = time.time()
+    
+    for i in range(1, TOTAL_REPORTS + 1):
+        try:
+            await client.call(
+                ReportRequest(
+                    peer=entity,
+                    id=msg_ids,
+                    reason=InputReportReasonViolence()
+                )
+            )
+            sent += 1
+            print(f"[{i:>2}/{TOTAL_REPORTS}] ✅ Жалоба отправлена")
+        except errors.FloodWaitError as e:
+            print(f"[{i:>2}/{TOTAL_REPORTS}] ⚠️ Флуд-вейт {e.seconds} сек")
+            await asyncio.sleep(e.seconds)
+        except Exception as e:
+            errors_count += 1
+            print(f"[{i:>2}/{TOTAL_REPORTS}] ❌ Ошибка: {e}")
+        
+        if i < TOTAL_REPORTS:
+            await asyncio.sleep(INTERVAL)
+    
+    elapsed = int(time.time() - start_time)
+    minutes = elapsed // 60
+    seconds = elapsed % 60
+    
+    print("\n" + "="*50)
+    print(" ОТЧЁТ ПО СНОСУ")
+    print("="*50)
+    print(f" Цель:          @{target_username}")
+    print(f" Отправлено:    {sent}/{TOTAL_REPORTS} жалоб")
+    print(f" Привязано сообщений: {len(msg_ids)}")
+    print(f" Ошибок:        {errors_count}")
+    print(f" Время:         {minutes} мин {seconds} сек")
+    print("="*50 + "\n")
+    
+    await client.disconnect()
+
+# ===== СТАТУС АККАУНТА =====
+async def check_account_status(username):
+    client = TelegramClient(SESSION_NAME, api_id, api_hash)
+    await client.start()
+    try:
+        entity = await client.get_entity(f'@{username}')
+        if entity.deleted:
+            status = "❌ Аккаунт удалён или заблокирован"
+        elif entity.restricted:
+            status = "⚠️ Аккаунт ограничен"
+        else:
+            status = "✅ Аккаунт активен"
+        await client.disconnect()
+        return status, entity
+    except errors.UsernameNotOccupiedError:
+        await client.disconnect()
+        return "❌ Пользователь не найден", None
+    except Exception as e:
+        await client.disconnect()
+        return f"⚠️ Ошибка: {e}", None
+
+# ===== ОСНОВНОЕ МЕНЮ =====
 async def main():
     global TARGET_USERNAME
     while True:
@@ -226,7 +371,7 @@ async def main():
 ║   ██║  ██║╚██████╔╝╚██████╔╝██║  ██╗███████╗   ██║     ║
 ║   ╚═╝  ╚═╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚══════╝   ╚═╝     ║
 ╠══════════════════════════════════════════════════════════╣
-║                  ROCKET DEANON PRO v9.6                  ║
+║                  ROCKET DEANON PRO v9.8                  ║
 ║                  АВТОПОИСК УГРОЗ                         ║
 ╠══════════════════════════════════════════════════════════╣
 ║  [1] 👤 TELEGRAM   — инфо по юзеру                      ║
@@ -285,137 +430,6 @@ async def main():
             input("Неверно. ENTER → меню")
 
 # ===== ДОПОЛНИТЕЛЬНЫЕ ФУНКЦИИ =====
-async def check_account_status(username):
-    client = TelegramClient(SESSION_NAME, api_id, api_hash)
-    await client.start()
-    try:
-        entity = await client.get_entity(f'@{username}')
-        if entity.deleted:
-            status = "❌ Аккаунт удалён или заблокирован"
-        elif entity.restricted:
-            status = "⚠️ Аккаунт ограничен"
-        else:
-            status = "✅ Аккаунт активен"
-        await client.disconnect()
-        return status, entity
-    except errors.UsernameNotOccupiedError:
-        await client.disconnect()
-        return "❌ Пользователь не найден", None
-    except Exception as e:
-        await client.disconnect()
-        return f"⚠️ Ошибка: {e}", None
-
-async def send_reports(target_username):
-    print("\n" + "="*50)
-    print(f" ROCKET SNOSER — {TOTAL_REPORTS} жалоб за {TOTAL_REPORTS * INTERVAL // 60} минут")
-    print(" ПРИЧИНА: УГРОЗЫ (VIOLENCE)")
-    print("="*50 + "\n")
-    
-    client = TelegramClient(SESSION_NAME, api_id, api_hash)
-    await client.start()
-    
-    me = await client.get_me()
-    print(f"[+] Аккаунт: {me.first_name} (ID: {me.id})")
-    
-    try:
-        entity = await client.get_entity(f'@{target_username}')
-        print(f"[+] Цель найдена: {entity.title if hasattr(entity, 'title') else entity.first_name}")
-    except Exception as e:
-        print(f"[-] Ошибка: цель не найдена. {e}")
-        await client.disconnect()
-        return
-    
-    msg_ids = []
-    while True:
-        threat_ids, _ = await find_threat_messages(client, entity, limit=150)
-        if threat_ids:
-            msg_ids = threat_ids
-            break
-        else:
-            print("\n" + "="*50)
-            print(" УГРОЗЫ НЕ ОБНАРУЖЕНЫ. ВЫБЕРИТЕ ДЕЙСТВИЕ:")
-            print("="*50)
-            print("  1. 🔄 Повторить поиск")
-            print("  2. ⚠️ Отправить без привязки (РИСК БАНА)")
-            print("  3. ❌ Отменить отправку")
-            print("="*50)
-            choice = input(">> ").strip()
-            
-            if choice == '1':
-                continue
-            elif choice == '2':
-                print("[!] Отправка без привязки...")
-                try:
-                    last_msg = await client.get_messages(entity, limit=1)
-                    msg_ids = [last_msg[0].id] if last_msg else [1]
-                except:
-                    msg_ids = [1]
-                break
-            elif choice == '3':
-                print("[❌] Отменено.")
-                await client.disconnect()
-                return
-    
-    print(f"\n[+] Старт: {TOTAL_REPORTS} жалоб\n")
-    sent = 0
-    errors_count = 0
-    start_time = time.time()
-    
-    for i in range(1, TOTAL_REPORTS + 1):
-        try:
-            await client.call(
-                ReportRequest(
-                    peer=entity,
-                    id=msg_ids,
-                    reason=InputReportReasonViolence()
-                )
-            )
-            sent += 1
-            print(f"[{i:>2}/{TOTAL_REPORTS}] ✅ Жалоба отправлена")
-        except errors.FloodWaitError as e:
-            print(f"[{i:>2}/{TOTAL_REPORTS}] ⚠️ Флуд-вейт {e.seconds} сек")
-            await asyncio.sleep(e.seconds)
-        except Exception as e:
-            errors_count += 1
-            print(f"[{i:>2}/{TOTAL_REPORTS}] ❌ Ошибка: {e}")
-        
-        if i < TOTAL_REPORTS:
-            await asyncio.sleep(INTERVAL)
-    
-    elapsed = int(time.time() - start_time)
-    minutes = elapsed // 60
-    seconds = elapsed % 60
-    
-    print("\n" + "="*50)
-    print(" ОТЧЁТ ПО СНОСУ")
-    print("="*50)
-    print(f" Цель:          @{target_username}")
-    print(f" Отправлено:    {sent}/{TOTAL_REPORTS} жалоб")
-    print(f" Ошибок:        {errors_count}")
-    print(f" Время:         {minutes} мин {seconds} сек")
-    print("="*50 + "\n")
-    
-    await client.disconnect()
-
-async def find_threat_messages(client, entity, limit=150):
-    print(f"[+] Сканирование последних {limit} сообщений...")
-    messages = await client.get_messages(entity, limit=limit)
-    threat_ids = []
-    for msg in messages:
-        if msg.text:
-            msg_lower = msg.text.lower()
-            for word in THREAT_KEYWORDS:
-                if word in msg_lower:
-                    threat_ids.append(msg.id)
-                    print(f"  ⚠️ Угроза в сообщении {msg.id}")
-                    break
-    if threat_ids:
-        print(f"[+] Найдено {len(threat_ids)} сообщений с угрозами.")
-        return threat_ids, messages
-    else:
-        print("[!] УГРОЗЫ НЕ ОБНАРУЖЕНЫ.")
-        return [], messages
-
 def get_phone_by_nick(nick):
     print(f"\n[+] Поиск номера для @{nick}...")
     try:
@@ -538,16 +552,6 @@ def get_max_ip_info(ip):
             print("  ⚠️ Не удалось проверить.")
     except:
         print("  ⚠️ Ошибка проверки.")
-
-THREAT_KEYWORDS = [
-    'убью', 'убить', 'смерть', 'зарежу', 'зарезать', 'взорву', 'взорвать',
-    'подожгу', 'поджечь', 'сломаю', 'сломать', 'изнасилую', 'изнасиловать',
-    'отрежу', 'отрезать', 'вырежу', 'вырезать', 'закопаю', 'закопать',
-    'киллер', 'расстрел', 'расстреляю', 'петля', 'пуля', 'нож', 'пистолет',
-    'kill', 'death', 'die', 'murder', 'slaughter', 'blood', 'bloody',
-    'shoot', 'shot', 'gun', 'weapon', 'bomb', 'explosive', 'terror',
-    'attack', 'assault', 'violence', 'violent', 'threat', 'threaten',
-]
 
 if __name__ == "__main__":
     asyncio.run(main())
